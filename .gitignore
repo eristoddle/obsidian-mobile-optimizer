@@ -1,0 +1,5 @@
+node_modules
+main.js
+.obsidian.mobile
+dist/
+*.js.map

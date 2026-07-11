@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-mobile-optimizer",
+  "name": "Mobile Optimizer",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Diagnose which plugins hurt mobile performance and generate a mobile-safe config folder.",
+  "author": "Obsidian Mobile Optimizer",
+  "authorUrl": "https://github.com/obsidian-mobile-optimizer",
+  "isDesktopOnly": false
+}
