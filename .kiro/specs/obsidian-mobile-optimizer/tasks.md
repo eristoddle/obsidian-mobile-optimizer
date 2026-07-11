@@ -182,7 +182,7 @@ Build the Obsidian Mobile Optimizer as a community plugin in TypeScript. The imp
     - `onunload()`: call `this.app.workspace.detachLeavesOfType(VIEW_TYPE)`
     - _Requirements: 1.1, 1.2, 5.2, 5.3_
 
-  - [-] 10.2 Wire "Generate Mobile Config" button into DashboardView
+  - [x] 10.2 Wire "Generate Mobile Config" button into DashboardView
     - Render the button in `onOpen()` below the Recommendations section
     - On click: disable button, inject spinner element; instantiate `ConfigGenerator` and call `generate(onProgress)`; on `"done"` show `new Notice("Mobile config generated. On mobile: Settings → About → Override config folder → .obsidian.mobile")`; on `"error"` the ConfigGenerator already fired the error notice; re-enable button and remove spinner in all cases
     - _Requirements: 4.1, 4.5, 4.7_

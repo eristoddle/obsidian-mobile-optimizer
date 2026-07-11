@@ -1,10 +1,11 @@
 // Obsidian Mobile Optimizer — DashboardView
 // ItemView that renders the plugin compatibility dashboard.
-// Requirements: 1.2, 1.7
+// Requirements: 1.2, 1.7, 4.1, 4.5, 4.7
 
-import { ItemView, WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, WorkspaceLeaf } from "obsidian";
 import { CompatibilityEngine, CompatibilityRating } from "./CompatibilityEngine";
 import { Profiler, PluginMetric } from "./Profiler";
+import { ConfigGenerator } from "./ConfigGenerator";
 
 export const VIEW_TYPE = "mobile-optimizer-dashboard";
 
@@ -159,6 +160,9 @@ export class DashboardView extends ItemView {
     const redPlugins = sorted.filter((m) => m.rating === "red");
 
     this.renderRecommendations(redPlugins);
+
+    // Step 6 — render the "Generate Mobile Config" button (Requirements 4.1, 4.5, 4.7).
+    this.renderGenerateButton();
   }
 
   /**
@@ -229,6 +233,62 @@ export class DashboardView extends ItemView {
       const ratingCell = row.createEl("td");
       this.renderTrafficLight(ratingCell, metric.rating ?? "yellow");
     }
+  }
+
+  /**
+   * Render the "Generate Mobile Config" button and wire its click handler.
+   *
+   * Behaviour (Requirements 4.1, 4.5, 4.7):
+   *  - Button is disabled and a spinner is injected while the operation runs.
+   *  - On "done": shows a Notice with instructions for the mobile device.
+   *  - On "error": ConfigGenerator already fired the error Notice; no extra notice needed.
+   *  - In all terminal cases ("done" or "error"): re-enables the button and removes the spinner.
+   */
+  private renderGenerateButton(): void {
+    const { contentEl } = this;
+
+    const wrapper = contentEl.createEl("div", {
+      cls: "mobile-optimizer-generate-wrapper",
+    });
+
+    const button = wrapper.createEl("button", {
+      text: "Generate Mobile Config",
+      cls: "mod-cta",
+    });
+    button.setAttribute("aria-label", "Generate a mobile-safe Obsidian config folder");
+
+    button.addEventListener("click", async () => {
+      // Requirement 4.7 — disable button and show spinner.
+      button.disabled = true;
+      const spinner = wrapper.createEl("span", {
+        cls: "mobile-optimizer-spinner",
+      });
+      spinner.setAttribute("aria-label", "Generating…");
+
+      const cleanup = () => {
+        button.disabled = false;
+        spinner.remove();
+      };
+
+      const generator = new ConfigGenerator(
+        this.app,
+        this.plugin.compatEngine
+      );
+
+      await generator.generate((state) => {
+        if (state === "done") {
+          // Requirement 4.5 — instruct user how to apply the config on mobile.
+          new Notice(
+            "Mobile config generated. On mobile: Settings → About → Override config folder → .obsidian.mobile"
+          );
+          cleanup();
+        } else if (state === "error") {
+          // ConfigGenerator already fired the error Notice.
+          cleanup();
+        }
+        // "start" state: operation underway — keep spinner visible.
+      });
+    });
   }
 
   /**
