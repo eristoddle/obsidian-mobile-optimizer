@@ -176,7 +176,7 @@ Build the Obsidian Mobile Optimizer as a community plugin in TypeScript. The imp
   - Ensure color values meet WCAG AA contrast ratio against the Obsidian default background
   - _Requirements: 3.5, 4.7_
 
-- [ ] 10. Wire everything in `main.ts` and add "Generate Mobile Config" button
+- [x] 10. Wire everything in `main.ts` and add "Generate Mobile Config" button
   - [x] 10.1 Implement `MobileOptimizerPlugin` class
     - `onload()`: instantiate `Profiler` and `CompatibilityEngine`; register `DashboardView` via `this.registerView(VIEW_TYPE, (leaf) => new DashboardView(leaf, this))`; add ribbon icon `"smartphone"` that calls `activateView()`; implement `activateView()` to open the dashboard leaf in the right sidebar
     - `onunload()`: call `this.app.workspace.detachLeavesOfType(VIEW_TYPE)`
@@ -187,8 +187,9 @@ Build the Obsidian Mobile Optimizer as a community plugin in TypeScript. The imp
     - On click: disable button, inject spinner element; instantiate `ConfigGenerator` and call `generate(onProgress)`; on `"done"` show `new Notice("Mobile config generated. On mobile: Settings → About → Override config folder → .obsidian.mobile")`; on `"error"` the ConfigGenerator already fired the error notice; re-enable button and remove spinner in all cases
     - _Requirements: 4.1, 4.5, 4.7_
 
-- [~] 11. Final checkpoint — full integration
+- [x] 11. Final checkpoint — full integration
   - Run the full Jest test suite (`npx jest --runInBand`). Ensure all tests pass, ask the user if questions arise.
+  - Result: all 94 tests pass (8 suites), stable across repeated runs; `tsc --noEmit` clean under `strict`; production build emits `main.js` (7.1kb).
 
 ## Notes
 

@@ -16,11 +16,11 @@ import { DashboardView, VIEW_TYPE } from "./DashboardView";
  *    torn down cleanly (Requirement 5.3).
  */
 export default class MobileOptimizerPlugin extends Plugin {
-  /** Shared Profiler instance — exposed so DashboardView can read metrics. */
-  profiler: Profiler;
+  /** Shared Profiler instance — exposed so DashboardView can read metrics. Assigned in onload(). */
+  profiler!: Profiler;
 
-  /** Shared CompatibilityEngine instance — exposed so DashboardView can classify plugins. */
-  compatEngine: CompatibilityEngine;
+  /** Shared CompatibilityEngine instance — exposed so DashboardView can classify plugins. Assigned in onload(). */
+  compatEngine!: CompatibilityEngine;
 
   /**
    * Called by Obsidian when the plugin is loaded.

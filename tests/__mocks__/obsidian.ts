@@ -77,8 +77,11 @@ export class Modal {
   }
 }
 
-export class Notice {
-  constructor(public message: string) {}
+// Implemented as a plain function (not an ES6 class) so `jest.spyOn` can wrap
+// it and still be invoked with `new` — spying on an ES6 class triggers
+// "Class constructor cannot be invoked without 'new'" when the spy calls through.
+export function Notice(this: any, message: string) {
+  this.message = message;
 }
 
 export class WorkspaceLeaf {}

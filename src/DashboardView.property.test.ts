@@ -208,8 +208,12 @@ describe("DashboardView — Property 7: recommendations match exactly the red-ra
           (li) => li.textContent ?? ""
         );
 
-        // No non-red plugin should appear in the list.
+        // A non-red plugin may share a name with a red plugin, in which case
+        // that name legitimately appears (contributed by its red twin). Only a
+        // name held *exclusively* by non-red plugins must be absent.
+        const redNames = new Set(redPlugins.map((m) => m.pluginName));
         for (const plugin of nonRedPlugins) {
+          if (redNames.has(plugin.pluginName)) continue;
           const unexpected = `Disable ${plugin.pluginName} on mobile`;
           if (liTexts.includes(unexpected)) {
             return false;
