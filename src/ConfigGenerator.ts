@@ -2,7 +2,14 @@
 // Copies .obsidian → .obsidian.mobile and patches community-plugins.json.
 
 import { App, Modal, Notice } from "obsidian";
-import { CompatibilityEngine } from "./CompatibilityEngine";
+import { CompatibilityEngine, CompatibilityRating } from "./CompatibilityEngine";
+
+/** The only files Obsidian needs to run a plugin. Everything else in a plugin
+ *  folder (node_modules, .git, src) is dev baggage — 800MB of it in a dev vault. */
+const PLUGIN_RUNTIME_FILES = new Set(["manifest.json", "main.js", "styles.css", "data.json"]);
+const SKIP_NAMES = new Set([".git", "node_modules", ".DS_Store"]);
+
+const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 /**
  * Modal subclass that asks the user whether to overwrite the existing
@@ -56,7 +63,23 @@ class OverwriteConfirmModal extends Modal {
 }
 
 export class ConfigGenerator {
-  constructor(private app: App, private compatEngine: CompatibilityEngine) {}
+  /**
+   * @param ratings Measured ratings from the dashboard. When absent (or an id
+   *                is missing), falls back to the hardcoded classification.
+   */
+  constructor(
+    private app: App,
+    private compatEngine: CompatibilityEngine,
+    private ratings?: Map<string, CompatibilityRating>
+  ) {}
+
+  private ratingOf(id: string): CompatibilityRating {
+    return this.ratings?.get(id) ?? this.compatEngine.classify(id);
+  }
+
+  private get configDir(): string {
+    return this.app.vault.configDir ?? ".obsidian";
+  }
 
   /**
    * Entry point called when "Generate Mobile Config" is clicked.
@@ -73,14 +96,14 @@ export class ConfigGenerator {
     onProgress: (state: "start" | "done" | "error") => void
   ): Promise<void> {
     const adapter = this.app.vault.adapter;
-    const src = ".obsidian";
-    const dest = ".obsidian.mobile";
+    const src = this.configDir;
+    const dest = `${src}.mobile`;
 
     // Requirement 4.8 — source folder must exist.
     const srcExists = await adapter.exists(src);
     if (!srcExists) {
       new Notice(
-        "Config folder `.obsidian` not found. Cannot generate mobile config."
+        `Config folder \`${src}\` not found. Cannot generate mobile config.`
       );
       return;
     }
@@ -97,6 +120,10 @@ export class ConfigGenerator {
     onProgress("start");
 
     try {
+      // Start clean so files from an earlier (bloated) copy don't linger.
+      if (destExists && typeof (adapter as any).rmdir === "function") {
+        await adapter.rmdir(dest, true);
+      }
       await this.copyRecursive(src, dest);
       await this.patchCommunityPlugins(dest);
       onProgress("done");
@@ -144,6 +171,7 @@ export class ConfigGenerator {
 
     // Copy each file.
     for (const filePath of listing.files) {
+      if (!this.shouldCopyFile(filePath)) continue;
       // Derive the destination file path by replacing the srcPath prefix.
       const relativePart = filePath.slice(srcPath.length);
       const destFilePath = destPath + relativePart;
@@ -165,10 +193,46 @@ export class ConfigGenerator {
 
     // Recurse into each sub-folder.
     for (const folderPath of listing.folders) {
+      if (!(await this.shouldCopyFolder(folderPath))) continue;
       const relativePart = folderPath.slice(srcPath.length);
       const destFolderPath = destPath + relativePart;
       await this.copyRecursive(folderPath, destFolderPath);
     }
+  }
+
+  /** Path segments below the config dir, e.g. ["plugins", "dataview", "main.js"]. */
+  private relParts(path: string): string[] {
+    const root = this.configDir + "/";
+    return (path.startsWith(root) ? path.slice(root.length) : path).split("/");
+  }
+
+  private shouldCopyFile(path: string): boolean {
+    if (SKIP_NAMES.has(baseName(path))) return false;
+    const parts = this.relParts(path);
+    if (parts[0] === "plugins" && parts.length >= 3) {
+      return parts.length === 3 && PLUGIN_RUNTIME_FILES.has(parts[2]);
+    }
+    return true;
+  }
+
+  private async shouldCopyFolder(path: string): Promise<boolean> {
+    if (SKIP_NAMES.has(baseName(path))) return false;
+    const parts = this.relParts(path);
+    if (parts[0] !== "plugins") return true;
+    if (parts.length > 2) return false; // nothing below a plugin's own folder
+    if (parts.length === 2) {
+      // Plugin folder: drop it entirely if the plugin is rated red. The folder
+      // name need not match the plugin id, so read the manifest.
+      try {
+        const manifest = JSON.parse(
+          await this.app.vault.adapter.read(`${path}/manifest.json`)
+        );
+        if (manifest?.id && this.ratingOf(manifest.id) === "red") return false;
+      } catch {
+        // No readable manifest — copy it and let Obsidian decide.
+      }
+    }
+    return true;
   }
 
   /**
@@ -210,7 +274,7 @@ export class ConfigGenerator {
 
     // Step 4 — filter out Red-classified IDs, preserving relative order.
     const filtered = ids.filter(
-      (id) => this.compatEngine.classify(id) !== "red"
+      (id) => this.ratingOf(id) !== "red"
     );
 
     // Step 5 — write filtered array back.

@@ -35,6 +35,14 @@ function patchObsidianDom(): void {
   (HTMLElement.prototype as any).empty = function (): void {
     while (this.firstChild) this.removeChild(this.firstChild);
   };
+
+  (HTMLElement.prototype as any).createDiv = function (opts?: { cls?: string }) {
+    return this.createEl("div", opts);
+  };
+
+  (HTMLElement.prototype as any).addClass = function (cls: string): void {
+    this.classList.add(cls);
+  };
 }
 
 patchObsidianDom();
@@ -51,29 +59,55 @@ function makeMetric(
     pluginName: overrides.pluginName ?? "Test Plugin",
     loadTimeMs: overrides.loadTimeMs !== undefined ? overrides.loadTimeMs : 10,
     enabled: overrides.enabled ?? true,
+    bundleKB: overrides.bundleKB,
+    storageMB: overrides.storageMB,
+    heapDeltaMB: overrides.heapDeltaMB,
     rating: overrides.rating,
+    reasons: overrides.reasons,
   };
 }
 
-function makePluginHost(metrics: PluginMetric[]): MobileOptimizerPluginHost {
+/** Host whose engine passes each metric's preset rating/reasons through. */
+function makePluginHost(
+  metrics: PluginMetric[],
+  profilerOverrides: Record<string, unknown> = {}
+): MobileOptimizerPluginHost {
   return {
     profiler: {
       collectMetrics: () => metrics,
       refresh: () => metrics,
+      scan: async () => metrics,
+      measure: async () => metrics,
+      ...profilerOverrides,
     } as any,
     compatEngine: {
-      classify: (id: string) => {
-        const m = metrics.find((x) => x.pluginId === id);
-        return m?.rating ?? "yellow";
-      },
+      classify: (id: string) =>
+        metrics.find((x) => x.pluginId === id)?.rating ?? "yellow",
+      rate: (m: PluginMetric) => ({
+        rating: m.rating ?? "yellow",
+        reasons: m.reasons ?? [],
+      }),
     } as any,
   };
 }
 
 function makeDashboardView(metrics: PluginMetric[]): DashboardView {
-  const leaf = {} as any;
-  const view = new DashboardView(leaf, makePluginHost(metrics));
-  return view;
+  return new DashboardView({} as any, makePluginHost(metrics));
+}
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+/** Cells of the first body row: [light, name, load, bundle, stored, memory]. */
+function firstRowCells(view: DashboardView): string[] {
+  return Array.from(view.contentEl.querySelectorAll("tbody tr:first-child td")).map(
+    (td) => td.textContent ?? ""
+  );
+}
+
+function button(view: DashboardView, text: string): HTMLButtonElement {
+  return Array.from(view.contentEl.querySelectorAll("button")).find(
+    (b) => b.textContent === text
+  ) as HTMLButtonElement;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,15 +117,14 @@ function makeDashboardView(metrics: PluginMetric[]): DashboardView {
 describe("renderTrafficLight", () => {
   const cases: [CompatibilityRating, string, string][] = [
     ["red", "traffic-red", "Red \u2013 high risk"],
-    ["yellow", "traffic-yellow", "Yellow \u2013 unknown"],
-    ["green", "traffic-green", "Green \u2013 safe"],
+    ["yellow", "traffic-yellow", "Yellow \u2013 moderate or unknown"],
+    ["green", "traffic-green", "Green \u2013 light"],
   ];
 
   test.each(cases)(
     "rating=%s → CSS class '%s' and aria-label '%s'",
     async (rating, expectedClass, expectedLabel) => {
-      const metric = makeMetric({ rating });
-      const view = makeDashboardView([metric]);
+      const view = makeDashboardView([makeMetric({ rating })]);
       await view.onOpen();
 
       const span = view.contentEl.querySelector(`span.${expectedClass}`);
@@ -101,16 +134,14 @@ describe("renderTrafficLight", () => {
   );
 
   it("creates exactly one span per plugin row", async () => {
-    const metrics = [
+    const view = makeDashboardView([
       makeMetric({ pluginId: "a", rating: "red" }),
       makeMetric({ pluginId: "b", rating: "yellow" }),
       makeMetric({ pluginId: "c", rating: "green" }),
-    ];
-    const view = makeDashboardView(metrics);
+    ]);
     await view.onOpen();
 
-    const spans = view.contentEl.querySelectorAll("span[aria-label]");
-    expect(spans.length).toBe(3);
+    expect(view.contentEl.querySelectorAll("span[aria-label]").length).toBe(3);
   });
 });
 
@@ -119,110 +150,113 @@ describe("renderTrafficLight", () => {
 // ---------------------------------------------------------------------------
 
 describe("renderPluginList", () => {
-  it("renders a table with Name, Load Time, Rating columns", async () => {
+  it("renders Name, Load, Bundle, Stored and Memory columns", async () => {
     const view = makeDashboardView([makeMetric({ rating: "green" })]);
     await view.onOpen();
 
     const headers = Array.from(view.contentEl.querySelectorAll("th")).map(
       (th) => th.textContent
     );
-    expect(headers).toContain("Name");
-    expect(headers).toContain("Load Time");
-    expect(headers).toContain("Rating");
+    expect(headers).toEqual(["", "Name", "Load", "Bundle", "Stored", "Memory"]);
   });
 
   it("renders one row per metric", async () => {
-    const metrics = [
+    const view = makeDashboardView([
       makeMetric({ pluginId: "a", pluginName: "Alpha", rating: "green" }),
       makeMetric({ pluginId: "b", pluginName: "Beta", rating: "yellow" }),
       makeMetric({ pluginId: "c", pluginName: "Gamma", rating: "red" }),
-    ];
-    const view = makeDashboardView(metrics);
+    ]);
     await view.onOpen();
 
-    const rows = view.contentEl.querySelectorAll("tbody tr");
-    expect(rows.length).toBe(3);
+    expect(view.contentEl.querySelectorAll("tbody tr").length).toBe(3);
   });
 
-  it("displays the plugin name in the first cell of each row", async () => {
-    const metric = makeMetric({ pluginName: "My Plugin", rating: "green" });
-    const view = makeDashboardView([metric]);
+  it("shows measured numbers, not dashes", async () => {
+    const view = makeDashboardView([
+      makeMetric({
+        rating: "red",
+        pluginName: "Dataview",
+        loadTimeMs: 128,
+        bundleKB: 1272,
+        storageMB: 3.2,
+        heapDeltaMB: 4.1,
+      }),
+    ]);
     await view.onOpen();
 
-    const firstCell = view.contentEl.querySelector("tbody tr td");
-    expect(firstCell?.textContent).toBe("My Plugin");
+    expect(firstRowCells(view).slice(1)).toEqual([
+      "Dataview",
+      "128 ms",
+      "1.2 MB",
+      "3.2 MB",
+      "4.1 MB",
+    ]);
   });
 
-  it("displays formatted load time in the second cell", async () => {
-    const metric = makeMetric({ loadTimeMs: 42.5, rating: "green" });
-    const view = makeDashboardView([metric]);
+  it("shows a dash only for what has not been measured", async () => {
+    const view = makeDashboardView([
+      makeMetric({ rating: "yellow", loadTimeMs: null, bundleKB: 34 }),
+    ]);
     await view.onOpen();
 
-    const cells = view.contentEl.querySelectorAll("tbody tr td");
-    expect(cells[1]?.textContent).toBe("42.50 ms");
+    const cells = firstRowCells(view);
+    expect(cells[2]).toBe("\u2014");
+    expect(cells[3]).toBe("34 KB");
   });
 
-  it("displays em dash for null load time", async () => {
-    const metric = makeMetric({ loadTimeMs: null, rating: "yellow" });
-    const view = makeDashboardView([metric]);
+  it("shows 'off' as the load time of a disabled plugin", async () => {
+    const view = makeDashboardView([
+      makeMetric({ rating: "yellow", enabled: false, loadTimeMs: null }),
+    ]);
     await view.onOpen();
 
-    const cells = view.contentEl.querySelectorAll("tbody tr td");
-    expect(cells[1]?.textContent).toBe("\u2014");
+    expect(firstRowCells(view)[2]).toBe("off");
   });
 
-  // --- Refresh button ---
+  it("lists the worst-rated plugin first", async () => {
+    const view = makeDashboardView([
+      makeMetric({ pluginId: "a", pluginName: "Light", rating: "green" }),
+      makeMetric({ pluginId: "b", pluginName: "Heavy", rating: "red" }),
+    ]);
+    await view.onOpen();
 
-  it("renders a Refresh button", async () => {
+    expect(firstRowCells(view)[1]).toBe("Heavy");
+  });
+
+  it("puts the rating reasons on the name cell's tooltip", async () => {
+    const view = makeDashboardView([
+      makeMetric({ rating: "red", reasons: ["3.6 MB bundle"] }),
+    ]);
+    await view.onOpen();
+
+    const name = view.contentEl.querySelectorAll("tbody tr td")[1];
+    expect(name.getAttribute("title")).toBe("3.6 MB bundle");
+  });
+
+  // --- Controls ---
+
+  it("renders Measure and Generate buttons", async () => {
     const view = makeDashboardView([]);
     await view.onOpen();
 
-    const btn = view.contentEl.querySelector("button");
-    expect(btn).not.toBeNull();
-    expect(btn?.textContent).toBe("Refresh");
+    const labels = Array.from(view.contentEl.querySelectorAll("button")).map(
+      (b) => b.textContent
+    );
+    expect(labels).toEqual(["Measure load times", "Generate Mobile Config"]);
   });
 
-  it("Refresh button re-renders the table with updated metrics", async () => {
-    const initial: PluginMetric[] = [
-      makeMetric({ pluginId: "a", pluginName: "Alpha", loadTimeMs: 10, rating: "green" }),
-    ];
-    const updated: PluginMetric[] = [
-      makeMetric({ pluginId: "b", pluginName: "Beta", loadTimeMs: 20, rating: "red" }),
-    ];
-
-    let callCount = 0;
-    const host: MobileOptimizerPluginHost = {
-      profiler: {
-        collectMetrics: () => initial,
-        refresh: () => {
-          callCount++;
-          return updated;
-        },
-      } as any,
-      compatEngine: {
-        classify: (id: string) => {
-          const all = [...initial, ...updated];
-          return all.find((x) => x.pluginId === id)?.rating ?? "yellow";
-        },
-      } as any,
-    };
-
-    const view = new DashboardView({} as any, host);
+  it("Measure runs the profiler's active pass and shows its load times", async () => {
+    const before = [makeMetric({ rating: "yellow", loadTimeMs: null })];
+    const after = [makeMetric({ rating: "red", loadTimeMs: 128 })];
+    const measure = jest.fn(async () => after);
+    const view = new DashboardView({} as any, makePluginHost(before, { measure }));
     await view.onOpen();
 
-    // Confirm initial state
-    expect(view.contentEl.querySelector("tbody")?.querySelectorAll("tr").length).toBe(1);
-    expect(view.contentEl.querySelector("tbody tr td")?.textContent).toBe("Alpha");
+    button(view, "Measure load times").click();
+    await flush();
 
-    // Click refresh
-    const btn = view.contentEl.querySelector("button") as HTMLButtonElement;
-    btn.click();
-
-    // Profiler.refresh() should have been called
-    expect(callCount).toBe(1);
-
-    // Table should now show updated metrics
-    expect(view.contentEl.querySelector("tbody tr td")?.textContent).toBe("Beta");
+    expect(measure).toHaveBeenCalledTimes(1);
+    expect(firstRowCells(view)[2]).toBe("128 ms");
   });
 });
 

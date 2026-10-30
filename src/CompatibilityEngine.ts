@@ -71,6 +71,49 @@ export class CompatibilityEngine {
   }
 
   /**
+   * Rate a plugin from its measured costs, with the hardcoded database as a
+   * floor: a known-heavy plugin stays red even if it measured fast, because
+   * its cost may only show up at runtime (e.g. an index rebuilding later).
+   *
+   * Falls back to classify() when nothing was measured.
+   */
+  rate(m: {
+    pluginId: string;
+    loadTimeMs?: number | null;
+    bundleKB?: number | null;
+    storageMB?: number | null;
+    heapDeltaMB?: number | null;
+  }): { rating: CompatibilityRating; reasons: string[] } {
+    const known = this.classify(m.pluginId);
+    const red: string[] = [];
+    const yellow: string[] = [];
+
+    const check = (
+      value: number | null | undefined,
+      redAt: number,
+      yellowAt: number,
+      label: (v: number) => string
+    ) => {
+      if (value == null) return;
+      if (value >= redAt) red.push(label(value));
+      else if (value >= yellowAt) yellow.push(label(value));
+    };
+    check(m.loadTimeMs, 100, 30, (v) => `${v} ms load`);
+    check(m.bundleKB, 2000, 500, (v) => `${(v / 1024).toFixed(1)} MB bundle`);
+    check(m.storageMB, 50, 5, (v) => `${v} MB stored`);
+    check(m.heapDeltaMB, 30, 10, (v) => `+${v} MB memory`);
+
+    if (known === "red") red.unshift("known mobile-heavy");
+
+    const measured = [m.loadTimeMs, m.bundleKB, m.storageMB, m.heapDeltaMB].some(
+      (v) => v != null
+    );
+    if (red.length) return { rating: "red", reasons: red };
+    if (yellow.length) return { rating: "yellow", reasons: yellow };
+    return { rating: measured ? "green" : known, reasons: [] };
+  }
+
+  /**
    * Return every plugin ID that is classified as "red".
    *
    * The returned array is in insertion order of the database map.

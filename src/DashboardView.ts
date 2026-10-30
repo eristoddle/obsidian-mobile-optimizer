@@ -52,6 +52,23 @@ export function sortMetrics(metrics: PluginMetric[]): PluginMetric[] {
   });
 }
 
+const RATING_RANK: Record<CompatibilityRating, number> = { red: 0, yellow: 1, green: 2 };
+
+/** Worst rating first, then heaviest bundle — the order you'd act on. */
+export function sortByCost(metrics: PluginMetric[]): PluginMetric[] {
+  return [...metrics].sort(
+    (a, b) =>
+      RATING_RANK[a.rating ?? "yellow"] - RATING_RANK[b.rating ?? "yellow"] ||
+      (b.loadTimeMs ?? -1) - (a.loadTimeMs ?? -1) ||
+      (b.bundleKB ?? -1) - (a.bundleKB ?? -1) ||
+      a.pluginName.localeCompare(b.pluginName)
+  );
+}
+
+function formatNum(v: number | null | undefined, unit: string): string {
+  return v == null ? "\u2014" : `${v} ${unit}`;
+}
+
 export function formatLoadTime(ms: number | null): string {
   if (ms === null) return "\u2014";
   return ms.toFixed(2) + " ms";
@@ -83,7 +100,8 @@ export function renderRecommendationsTo(
   if (redPlugins.length > 0) {
     const list = container.createEl("ul");
     for (const plugin of redPlugins) {
-      list.createEl("li", { text: `Disable ${plugin.pluginName} on mobile` });
+      const why = plugin.reasons?.length ? ` (${plugin.reasons.join(", ")})` : "";
+      list.createEl("li", { text: `Disable ${plugin.pluginName} on mobile${why}` });
     }
   } else {
     container.createEl("p", { text: "No high-risk plugins detected" });
@@ -93,227 +111,150 @@ export function renderRecommendationsTo(
 /**
  * The sidebar dashboard view for the Mobile Optimizer plugin.
  *
- * Extends Obsidian's `ItemView` and owns the complete dashboard DOM.
- * All DOM manipulation uses native APIs only — no React, Vue, or Preact.
- *
- * Requirements: 1.2, 1.7
+ * On open it runs the passive scan (bundle size + stored data), which touches
+ * no plugin. "Measure load times" runs the active pass that briefly disables
+ * and re-enables each plugin to time it.
  */
 export class DashboardView extends ItemView {
   private readonly plugin: MobileOptimizerPluginHost;
+  private metrics: PluginMetric[] = [];
+  private status = "";
+  private busy = false;
 
-  /**
-   * @param leaf   - The workspace leaf this view is attached to.
-   * @param plugin - The plugin host providing access to Profiler and CompatibilityEngine.
-   */
   constructor(leaf: WorkspaceLeaf, plugin: MobileOptimizerPluginHost) {
     super(leaf);
     this.plugin = plugin;
   }
 
-  /** Returns the unique view type identifier used to register this view. */
   getViewType(): string {
     return VIEW_TYPE;
   }
 
-  /** Returns the human-readable title shown in the tab header. */
   getDisplayText(): string {
     return "Mobile Optimizer";
   }
 
-  /** Returns the icon ID used for the sidebar tab (Requirement 1.2). */
   getIcon(): string {
     return "smartphone";
   }
 
-  /**
-   * Called by Obsidian when the view is opened.
-   *
-   * Lifecycle:
-   *  1. Collect raw metrics from the Profiler.
-   *  2. Attach a `rating` to each metric via CompatibilityEngine.classify().
-   *  3. Sort the enriched metrics with sortMetrics().
-   *  4. Render the plugin list table.
-   *  5. Render the recommendations section.
-   *
-   * Requirements: 1.2, 1.7
-   */
   async onOpen(): Promise<void> {
-    // Step 1 — collect raw PluginMetric[] from the Profiler.
-    const rawMetrics = this.plugin.profiler.collectMetrics();
-
-    // Step 2 — enrich each metric with a compatibility rating.
-    // PluginMetric as defined in Profiler.ts does not carry a `rating` field;
-    // we cast to the extended dashboard shape defined in design.md.
-    const enrichedMetrics: PluginMetric[] = rawMetrics.map((m) => ({
-      ...m,
-      rating: this.plugin.compatEngine.classify(m.pluginId),
-    }));
-
-    // Step 3 — sort according to the dashboard ordering rules.
-    const sorted = sortMetrics(enrichedMetrics);
-
-    // Step 4 — render the plugin list.
-    this.renderPluginList(sorted);
-
-    // Step 5 — render the recommendations section.
-    // Pass the full metrics for red-rated plugins so names can be displayed.
-    const redPlugins = sorted.filter((m) => m.rating === "red");
-
-    this.renderRecommendations(redPlugins);
-
-    // Step 6 — render the "Generate Mobile Config" button (Requirements 4.1, 4.5, 4.7).
-    this.renderGenerateButton();
+    this.metrics = this.rateAll(this.plugin.profiler.collectMetrics());
+    this.status = "Scanning bundle sizes and stored data\u2026";
+    this.render();
+    await this.scan();
   }
 
-  /**
-   * Called by Obsidian when the view is closed.
-   * Clears all DOM content to release memory (Requirement 5.2).
-   */
   async onClose(): Promise<void> {
     this.contentEl.empty();
   }
 
-  /**
-   * Render the plugin table into `contentEl`.
-   *
-   * Structure:
-   *  - A "Refresh" button above the table.
-   *  - A <table> with columns: Name, Load Time, Rating.
-   *  - One <tr> per metric.
-   *
-   * Requirements: 1.3, 1.5, 3.5
-   */
-  private renderPluginList(metrics: PluginMetric[]): void {
-    const { contentEl } = this;
+  private rateAll(metrics: PluginMetric[]): PluginMetric[] {
+    return metrics.map((m) => ({ ...m, ...this.plugin.compatEngine.rate(m) }));
+  }
 
-    // --- Refresh button (Requirement 1.5) ---
-    const refreshBtn = contentEl.createEl("button", {
-      text: "Refresh",
+  private async scan(): Promise<void> {
+    this.metrics = this.rateAll(await this.plugin.profiler.scan());
+    this.status = "Load times not measured yet. Measuring briefly disables and re-enables each plugin.";
+    this.render();
+  }
+
+  private async measure(): Promise<void> {
+    this.busy = true;
+    const measured = await this.plugin.profiler.measure((done, total, name) => {
+      this.status = name ? `Measuring ${done + 1}/${total}: ${name}\u2026` : "Done.";
+      this.render();
+    });
+    this.busy = false;
+    this.metrics = this.rateAll(measured);
+    this.status = "Measured. Memory column is desktop-only and approximate.";
+    this.render();
+  }
+
+  private render(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    const controls = contentEl.createDiv({ cls: "mobile-optimizer-controls" });
+    const measureBtn = controls.createEl("button", {
+      text: "Measure load times",
       cls: "mod-cta",
     });
-    refreshBtn.setAttribute("aria-label", "Refresh plugin list");
-    refreshBtn.addEventListener("click", () => {
-      // Re-run profiler, re-classify, re-sort, then re-render the full view.
-      const rawMetrics = this.plugin.profiler.refresh();
-      const enrichedMetrics: PluginMetric[] = rawMetrics.map((m) => ({
-        ...m,
-        rating: this.plugin.compatEngine.classify(m.pluginId),
-      }));
-      const sorted = sortMetrics(enrichedMetrics);
+    measureBtn.disabled = this.busy;
+    measureBtn.addEventListener("click", () => this.measure());
 
-      contentEl.empty();
-      this.renderPluginList(sorted);
+    contentEl.createEl("p", { text: this.status, cls: "mobile-optimizer-status" });
 
-      const redPlugins = sorted.filter((m) => m.rating === "red");
-      this.renderRecommendations(redPlugins);
-    });
+    this.renderPluginList(sortByCost(this.metrics));
+    renderRecommendationsTo(
+      contentEl,
+      sortByCost(this.metrics).filter((m) => m.rating === "red" && m.enabled)
+    );
+    this.renderGenerateButton();
+  }
 
-    // --- Table (Requirements 1.3, 3.5) ---
-    const table = contentEl.createEl("table", { cls: "mobile-optimizer-table" });
+  private renderPluginList(metrics: PluginMetric[]): void {
+    const table = this.contentEl.createEl("table", { cls: "mobile-optimizer-table" });
+    const headerRow = table.createEl("thead").createEl("tr");
+    for (const h of ["", "Name", "Load", "Bundle", "Stored", "Memory"]) {
+      headerRow.createEl("th", { text: h });
+    }
 
-    // Header row
-    const thead = table.createEl("thead");
-    const headerRow = thead.createEl("tr");
-    headerRow.createEl("th", { text: "Name" });
-    headerRow.createEl("th", { text: "Load Time" });
-    headerRow.createEl("th", { text: "Rating" });
-
-    // Body rows — one per metric
     const tbody = table.createEl("tbody");
-    for (const metric of metrics) {
+    for (const m of metrics) {
       const row = tbody.createEl("tr");
-
-      // Name cell
-      row.createEl("td", { text: metric.pluginName });
-
-      // Load Time cell — formatLoadTime handles null → "—" (Requirements 1.6, 2.2)
-      row.createEl("td", { text: formatLoadTime(metric.loadTimeMs) });
-
-      // Rating cell — contains a traffic-light span (Requirement 3.5)
-      const ratingCell = row.createEl("td");
-      this.renderTrafficLight(ratingCell, metric.rating ?? "yellow");
+      if (!m.enabled) row.addClass("mobile-optimizer-disabled");
+      this.renderTrafficLight(row.createEl("td"), m.rating ?? "yellow");
+      const name = row.createEl("td", { text: m.pluginName });
+      if (m.reasons?.length) name.setAttribute("title", m.reasons.join(", "));
+      row.createEl("td", { text: m.enabled ? formatNum(m.loadTimeMs, "ms") : "off" });
+      row.createEl("td", {
+        text: m.bundleKB == null ? "\u2014" : m.bundleKB >= 1024 ? `${(m.bundleKB / 1024).toFixed(1)} MB` : `${m.bundleKB} KB`,
+      });
+      row.createEl("td", { text: m.storageMB ? `${m.storageMB} MB` : "\u2014" });
+      row.createEl("td", { text: formatNum(m.heapDeltaMB, "MB") });
     }
   }
 
-  /**
-   * Render the "Generate Mobile Config" button and wire its click handler.
-   *
-   * Behaviour (Requirements 4.1, 4.5, 4.7):
-   *  - Button is disabled and a spinner is injected while the operation runs.
-   *  - On "done": shows a Notice with instructions for the mobile device.
-   *  - On "error": ConfigGenerator already fired the error Notice; no extra notice needed.
-   *  - In all terminal cases ("done" or "error"): re-enables the button and removes the spinner.
-   */
   private renderGenerateButton(): void {
-    const { contentEl } = this;
-
-    const wrapper = contentEl.createEl("div", {
+    const wrapper = this.contentEl.createEl("div", {
       cls: "mobile-optimizer-generate-wrapper",
     });
-
     const button = wrapper.createEl("button", {
       text: "Generate Mobile Config",
       cls: "mod-cta",
     });
     button.setAttribute("aria-label", "Generate a mobile-safe Obsidian config folder");
+    button.disabled = this.busy;
 
     button.addEventListener("click", async () => {
-      // Requirement 4.7 — disable button and show spinner.
       button.disabled = true;
-      const spinner = wrapper.createEl("span", {
-        cls: "mobile-optimizer-spinner",
-      });
-      spinner.setAttribute("aria-label", "Generating…");
-
+      const spinner = wrapper.createEl("span", { cls: "mobile-optimizer-spinner" });
       const cleanup = () => {
         button.disabled = false;
         spinner.remove();
       };
 
-      const generator = new ConfigGenerator(
-        this.app,
-        this.plugin.compatEngine
+      const ratings = new Map(
+        this.metrics.map((m) => [m.pluginId, m.rating ?? "yellow"] as const)
       );
+      const generator = new ConfigGenerator(this.app, this.plugin.compatEngine, ratings);
+      const dest = `${this.app.vault.configDir}.mobile`;
 
       await generator.generate((state) => {
         if (state === "done") {
-          // Requirement 4.5 — instruct user how to apply the config on mobile.
           new Notice(
-            "Mobile config generated. On mobile: Settings → About → Override config folder → .obsidian.mobile"
+            `Mobile config generated. On mobile: Settings \u2192 About \u2192 Override config folder \u2192 ${dest}`,
+            10000
           );
           cleanup();
         } else if (state === "error") {
-          // ConfigGenerator already fired the error Notice.
           cleanup();
         }
-        // "start" state: operation underway — keep spinner visible.
       });
     });
   }
 
-  /**
-   * Render the recommendations section into `contentEl`.
-   *
-   * Delegates to the exported `renderRecommendationsTo` helper so the logic
-   * can be unit-tested independently without constructing a full `DashboardView`.
-   *
-   * Requirements: 3.6, 3.7
-   *
-   * @param redPlugins - Array of PluginMetric objects whose rating === "red".
-   */
-  private renderRecommendations(redPlugins: PluginMetric[]): void {
-    renderRecommendationsTo(this.contentEl, redPlugins);
-  }
-
-  /**
-   * Render a traffic-light indicator `<span>` into `container`.
-   *
-   * The span receives:
-   *  - CSS class: `traffic-red` | `traffic-yellow` | `traffic-green`
-   *  - `aria-label`: human-readable description of the rating
-   *
-   * Requirements: 1.3, 3.5
-   */
   private renderTrafficLight(container: HTMLElement, rating: CompatibilityRating): void {
     const CLASS_MAP: Record<CompatibilityRating, string> = {
       red: "traffic-red",
@@ -322,10 +263,9 @@ export class DashboardView extends ItemView {
     };
     const LABEL_MAP: Record<CompatibilityRating, string> = {
       red: "Red \u2013 high risk",
-      yellow: "Yellow \u2013 unknown",
-      green: "Green \u2013 safe",
+      yellow: "Yellow \u2013 moderate or unknown",
+      green: "Green \u2013 light",
     };
-
     const span = container.createEl("span", { cls: CLASS_MAP[rating] });
     span.setAttribute("aria-label", LABEL_MAP[rating]);
   }

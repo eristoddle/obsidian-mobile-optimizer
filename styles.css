@@ -1,5 +1,4 @@
 /* Obsidian Mobile Optimizer — styles */
-/* TODO: full implementation in task 9 */
 
 /* Traffic light indicators */
 .traffic-red {
@@ -43,4 +42,42 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Dashboard layout */
+.mobile-optimizer-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mobile-optimizer-status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.mobile-optimizer-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-ui-small);
+}
+
+.mobile-optimizer-table th,
+.mobile-optimizer-table td {
+  padding: 4px 6px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.mobile-optimizer-table td:nth-child(n + 3) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mobile-optimizer-disabled {
+  opacity: 0.5;
+}
+
+.mobile-optimizer-generate-wrapper {
+  margin-top: 12px;
 }
