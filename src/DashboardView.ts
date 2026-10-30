@@ -18,6 +18,29 @@ export const VIEW_TYPE = "mobile-optimizer-dashboard";
 export interface MobileOptimizerPluginHost {
   profiler: Profiler;
   compatEngine: CompatibilityEngine;
+  /** User's keep-on-mobile choices, by plugin id. Absent = use the suggestion. */
+  overrides?: Record<string, boolean>;
+  saveOverrides?: () => Promise<void>;
+}
+
+/**
+ * Sync plugins. Dropping one from the mobile config makes the mobile vault
+ * pointless, so they are kept by default whatever their rating.
+ */
+export const SYNC_PLUGINS = new Set([
+  "remotely-save",
+  "obsidian-livesync",
+  "remotely-secure",
+  "fit",
+]);
+
+/** Suggested keep-on-mobile state, before any user override. */
+export function suggestKeep(m: PluginMetric): boolean {
+  return m.enabled && (SYNC_PLUGINS.has(m.pluginId) || m.rating !== "red");
+}
+
+function formatKB(kb: number): string {
+  return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
 }
 
 /**
@@ -113,7 +136,8 @@ export function renderRecommendationsTo(
  *
  * On open it runs the passive scan (bundle size + stored data), which touches
  * no plugin. "Measure load times" runs the active pass that briefly disables
- * and re-enables each plugin to time it.
+ * and re-enables each plugin to time it. Each row has a keep-on-mobile
+ * checkbox; ratings only set its default.
  */
 export class DashboardView extends ItemView {
   private readonly plugin: MobileOptimizerPluginHost;
@@ -124,6 +148,7 @@ export class DashboardView extends ItemView {
   constructor(leaf: WorkspaceLeaf, plugin: MobileOptimizerPluginHost) {
     super(leaf);
     this.plugin = plugin;
+    this.plugin.overrides ??= {};
   }
 
   getViewType(): string {
@@ -150,7 +175,35 @@ export class DashboardView extends ItemView {
   }
 
   private rateAll(metrics: PluginMetric[]): PluginMetric[] {
-    return metrics.map((m) => ({ ...m, ...this.plugin.compatEngine.rate(m) }));
+    return metrics.map((m) => {
+      const rated = { ...m, ...this.plugin.compatEngine.rate(m) };
+      if (SYNC_PLUGINS.has(m.pluginId)) {
+        rated.reasons = [...(rated.reasons ?? []), "needed for sync"];
+      }
+      return rated;
+    });
+  }
+
+  /** Whether this plugin goes into the mobile config. */
+  keeps(m: PluginMetric): boolean {
+    if (!m.enabled) return false;
+    return this.plugin.overrides?.[m.pluginId] ?? suggestKeep(m);
+  }
+
+  private async setKeep(m: PluginMetric, keep: boolean): Promise<void> {
+    const overrides = this.plugin.overrides!;
+    if (keep === suggestKeep(m)) delete overrides[m.pluginId];
+    else overrides[m.pluginId] = keep;
+    await this.plugin.saveOverrides?.();
+    this.render();
+  }
+
+  private async resetKeeps(): Promise<void> {
+    for (const id of Object.keys(this.plugin.overrides!)) {
+      delete this.plugin.overrides![id];
+    }
+    await this.plugin.saveOverrides?.();
+    this.render();
   }
 
   private async scan(): Promise<void> {
@@ -185,6 +238,7 @@ export class DashboardView extends ItemView {
 
     contentEl.createEl("p", { text: this.status, cls: "mobile-optimizer-status" });
 
+    this.renderSummary();
     this.renderPluginList(sortByCost(this.metrics));
     renderRecommendationsTo(
       contentEl,
@@ -193,10 +247,26 @@ export class DashboardView extends ItemView {
     this.renderGenerateButton();
   }
 
+  /** Running total of what the mobile config will carry vs desktop. */
+  private renderSummary(): void {
+    const enabled = this.metrics.filter((m) => m.enabled);
+    const kept = enabled.filter((m) => this.keeps(m));
+    const kb = (ms: PluginMetric[]) => ms.reduce((t, m) => t + (m.bundleKB ?? 0), 0);
+
+    const row = this.contentEl.createDiv({ cls: "mobile-optimizer-summary" });
+    row.createSpan({
+      text: `Mobile config: ${kept.length} of ${enabled.length} plugins, ${formatKB(kb(kept))} of bundles (desktop: ${formatKB(kb(enabled))})`,
+    });
+    if (Object.keys(this.plugin.overrides ?? {}).length) {
+      const reset = row.createEl("button", { text: "Reset to suggestions" });
+      reset.addEventListener("click", () => this.resetKeeps());
+    }
+  }
+
   private renderPluginList(metrics: PluginMetric[]): void {
     const table = this.contentEl.createEl("table", { cls: "mobile-optimizer-table" });
     const headerRow = table.createEl("thead").createEl("tr");
-    for (const h of ["", "Name", "Load", "Bundle", "Stored", "Memory"]) {
+    for (const h of ["Mobile", "", "Name", "Load", "Bundle", "Stored", "Memory"]) {
       headerRow.createEl("th", { text: h });
     }
 
@@ -204,13 +274,24 @@ export class DashboardView extends ItemView {
     for (const m of metrics) {
       const row = tbody.createEl("tr");
       if (!m.enabled) row.addClass("mobile-optimizer-disabled");
+
+      const box = row.createEl("td").createEl("input", { type: "checkbox" });
+      box.checked = this.keeps(m);
+      box.disabled = !m.enabled || this.busy;
+      box.setAttribute(
+        "aria-label",
+        m.enabled ? `Keep ${m.pluginName} on mobile` : `${m.pluginName} is off on desktop`
+      );
+      box.addEventListener("change", () => this.setKeep(m, box.checked));
+
       this.renderTrafficLight(row.createEl("td"), m.rating ?? "yellow");
       const name = row.createEl("td", { text: m.pluginName });
       if (m.reasons?.length) name.setAttribute("title", m.reasons.join(", "));
+      if (SYNC_PLUGINS.has(m.pluginId)) {
+        name.createSpan({ text: "sync", cls: "mobile-optimizer-tag" });
+      }
       row.createEl("td", { text: m.enabled ? formatNum(m.loadTimeMs, "ms") : "off" });
-      row.createEl("td", {
-        text: m.bundleKB == null ? "\u2014" : m.bundleKB >= 1024 ? `${(m.bundleKB / 1024).toFixed(1)} MB` : `${m.bundleKB} KB`,
-      });
+      row.createEl("td", { text: m.bundleKB == null ? "\u2014" : formatKB(m.bundleKB) });
       row.createEl("td", { text: m.storageMB ? `${m.storageMB} MB` : "\u2014" });
       row.createEl("td", { text: formatNum(m.heapDeltaMB, "MB") });
     }
@@ -238,13 +319,19 @@ export class DashboardView extends ItemView {
       const ratings = new Map(
         this.metrics.map((m) => [m.pluginId, m.rating ?? "yellow"] as const)
       );
-      const generator = new ConfigGenerator(this.app, this.plugin.compatEngine, ratings);
+      const keep = new Set(this.metrics.filter((m) => this.keeps(m)).map((m) => m.pluginId));
+      const generator = new ConfigGenerator(
+        this.app,
+        this.plugin.compatEngine,
+        ratings,
+        keep
+      );
       const dest = `${this.app.vault.configDir}.mobile`;
 
       await generator.generate((state) => {
         if (state === "done") {
           new Notice(
-            `Mobile config generated. On mobile: Settings \u2192 About \u2192 Override config folder \u2192 ${dest}`,
+            `Mobile config generated with ${keep.size} plugins. On mobile: Settings \u2192 About \u2192 Override config folder \u2192 ${dest}`,
             10000
           );
           cleanup();

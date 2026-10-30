@@ -22,6 +22,7 @@ function patchObsidianDom(): void {
     const el = document.createElement(tag) as HTMLElementTagNameMap[K];
     if (opts?.text) el.textContent = opts.text;
     if (opts?.cls) el.className = opts.cls;
+    if ((opts as any)?.type) (el as any).type = (opts as any).type;
     if (opts?.attr) {
       for (const [k, v] of Object.entries(opts.attr)) {
         (el as HTMLElement).setAttribute(k, v);
@@ -34,6 +35,10 @@ function patchObsidianDom(): void {
   // empty() — removes all children.
   (HTMLElement.prototype as any).empty = function (): void {
     while (this.firstChild) this.removeChild(this.firstChild);
+  };
+
+  (HTMLElement.prototype as any).createSpan = function (opts?: { text?: string; cls?: string }) {
+    return this.createEl("span", opts);
   };
 
   (HTMLElement.prototype as any).createDiv = function (opts?: { cls?: string }) {
@@ -97,7 +102,7 @@ function makeDashboardView(metrics: PluginMetric[]): DashboardView {
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-/** Cells of the first body row: [light, name, load, bundle, stored, memory]. */
+/** Cells of the first body row: [mobile, light, name, load, bundle, stored, memory]. */
 function firstRowCells(view: DashboardView): string[] {
   return Array.from(view.contentEl.querySelectorAll("tbody tr:first-child td")).map(
     (td) => td.textContent ?? ""
@@ -157,7 +162,7 @@ describe("renderPluginList", () => {
     const headers = Array.from(view.contentEl.querySelectorAll("th")).map(
       (th) => th.textContent
     );
-    expect(headers).toEqual(["", "Name", "Load", "Bundle", "Stored", "Memory"]);
+    expect(headers).toEqual(["Mobile", "", "Name", "Load", "Bundle", "Stored", "Memory"]);
   });
 
   it("renders one row per metric", async () => {
@@ -184,7 +189,7 @@ describe("renderPluginList", () => {
     ]);
     await view.onOpen();
 
-    expect(firstRowCells(view).slice(1)).toEqual([
+    expect(firstRowCells(view).slice(2)).toEqual([
       "Dataview",
       "128 ms",
       "1.2 MB",
@@ -200,8 +205,8 @@ describe("renderPluginList", () => {
     await view.onOpen();
 
     const cells = firstRowCells(view);
-    expect(cells[2]).toBe("\u2014");
-    expect(cells[3]).toBe("34 KB");
+    expect(cells[3]).toBe("\u2014");
+    expect(cells[4]).toBe("34 KB");
   });
 
   it("shows 'off' as the load time of a disabled plugin", async () => {
@@ -210,7 +215,7 @@ describe("renderPluginList", () => {
     ]);
     await view.onOpen();
 
-    expect(firstRowCells(view)[2]).toBe("off");
+    expect(firstRowCells(view)[3]).toBe("off");
   });
 
   it("lists the worst-rated plugin first", async () => {
@@ -220,7 +225,7 @@ describe("renderPluginList", () => {
     ]);
     await view.onOpen();
 
-    expect(firstRowCells(view)[1]).toBe("Heavy");
+    expect(firstRowCells(view)[2]).toBe("Heavy");
   });
 
   it("puts the rating reasons on the name cell's tooltip", async () => {
@@ -229,7 +234,7 @@ describe("renderPluginList", () => {
     ]);
     await view.onOpen();
 
-    const name = view.contentEl.querySelectorAll("tbody tr td")[1];
+    const name = view.contentEl.querySelectorAll("tbody tr td")[2];
     expect(name.getAttribute("title")).toBe("3.6 MB bundle");
   });
 
@@ -256,7 +261,7 @@ describe("renderPluginList", () => {
     await flush();
 
     expect(measure).toHaveBeenCalledTimes(1);
-    expect(firstRowCells(view)[2]).toBe("128 ms");
+    expect(firstRowCells(view)[3]).toBe("128 ms");
   });
 });
 
@@ -372,3 +377,101 @@ describe("renderRecommendationsTo", () => {
     expect(paras).toContain("No high-risk plugins detected");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Keep-on-mobile picker
+// ---------------------------------------------------------------------------
+
+function boxes(view: DashboardView): HTMLInputElement[] {
+  return Array.from(view.contentEl.querySelectorAll("tbody input[type=checkbox]"));
+}
+
+function summary(view: DashboardView): string {
+  return view.contentEl.querySelector(".mobile-optimizer-summary span")?.textContent ?? "";
+}
+
+describe("keep-on-mobile picker", () => {
+  const plugins = () => [
+    makeMetric({ pluginId: "heavy", pluginName: "Heavy", rating: "red", bundleKB: 4000 }),
+    makeMetric({ pluginId: "mid", pluginName: "Mid", rating: "yellow", bundleKB: 600 }),
+    makeMetric({ pluginId: "light", pluginName: "Light", rating: "green", bundleKB: 20 }),
+  ];
+
+  it("suggests dropping red and keeping yellow and green", async () => {
+    const view = makeDashboardView(plugins());
+    await view.onOpen();
+
+    expect(boxes(view).map((b) => b.checked)).toEqual([false, true, true]);
+  });
+
+  it("keeps a sync plugin by default even when it rates red", async () => {
+    const view = makeDashboardView([
+      makeMetric({ pluginId: "remotely-save", pluginName: "Remotely Save", rating: "red" }),
+    ]);
+    await view.onOpen();
+
+    expect(boxes(view)[0].checked).toBe(true);
+    expect(view.contentEl.querySelector(".mobile-optimizer-tag")?.textContent).toBe("sync");
+  });
+
+  it("can't keep a plugin that is off on desktop", async () => {
+    const view = makeDashboardView([
+      makeMetric({ pluginId: "x", rating: "green", enabled: false }),
+    ]);
+    await view.onOpen();
+
+    expect(boxes(view)[0].checked).toBe(false);
+    expect(boxes(view)[0].disabled).toBe(true);
+  });
+
+  it("shows the running total and updates it when a box is toggled", async () => {
+    const view = makeDashboardView(plugins());
+    await view.onOpen();
+    expect(summary(view)).toBe(
+      "Mobile config: 2 of 3 plugins, 620 KB of bundles (desktop: 4.5 MB)"
+    );
+
+    const heavy = boxes(view)[0];
+    heavy.checked = true;
+    heavy.dispatchEvent(new Event("change"));
+    await flush();
+
+    expect(summary(view)).toBe(
+      "Mobile config: 3 of 3 plugins, 4.5 MB of bundles (desktop: 4.5 MB)"
+    );
+  });
+
+  it("saves only choices that differ from the suggestion", async () => {
+    const host = makePluginHost(plugins());
+    host.overrides = {};
+    host.saveOverrides = jest.fn(async () => undefined);
+    const view = new DashboardView({} as any, host);
+    await view.onOpen();
+
+    const mid = boxes(view)[1];
+    mid.checked = false;
+    mid.dispatchEvent(new Event("change"));
+    await flush();
+    expect(host.overrides).toEqual({ mid: false });
+    expect(host.saveOverrides).toHaveBeenCalled();
+
+    const again = boxes(view)[1];
+    again.checked = true;
+    again.dispatchEvent(new Event("change"));
+    await flush();
+    expect(host.overrides).toEqual({});
+  });
+
+  it("restores saved choices and offers a reset", async () => {
+    const host = makePluginHost(plugins());
+    host.overrides = { heavy: true, light: false };
+    const view = new DashboardView({} as any, host);
+    await view.onOpen();
+
+    expect(boxes(view).map((b) => b.checked)).toEqual([true, true, false]);
+    button(view, "Reset to suggestions").click();
+    await flush();
+    expect(boxes(view).map((b) => b.checked)).toEqual([false, true, true]);
+  });
+});
+

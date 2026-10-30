@@ -176,3 +176,43 @@ describe("ConfigGenerator lean copy", () => {
     );
   });
 });
+
+describe("ConfigGenerator with an explicit keep set", () => {
+  it("keeps a red plugin the user checked and drops a green one they unchecked", async () => {
+    const tree = {
+      ".obsidian": { files: [".obsidian/community-plugins.json"], folders: [".obsidian/plugins"] },
+      ".obsidian/plugins": {
+        files: [],
+        folders: [".obsidian/plugins/remotely-save", ".obsidian/plugins/calendar"],
+      },
+      ".obsidian/plugins/remotely-save": { files: [".obsidian/plugins/remotely-save/main.js"], folders: [] },
+      ".obsidian/plugins/calendar": { files: [".obsidian/plugins/calendar/main.js"], folders: [] },
+    };
+    const { app, adapter } = makeTreeApp(tree, {
+      ".obsidian/plugins/remotely-save/manifest.json": '{"id":"remotely-save"}',
+      ".obsidian/plugins/calendar/manifest.json": '{"id":"calendar"}',
+    });
+    adapter.read.mockImplementation(async (p: string) => {
+      if (p.endsWith("remotely-save/manifest.json")) return '{"id":"remotely-save"}';
+      if (p.endsWith("calendar/manifest.json")) return '{"id":"calendar"}';
+      if (p.endsWith("community-plugins.json")) return '["remotely-save","calendar"]';
+      throw new Error("not found");
+    });
+    const gen = new ConfigGenerator(
+      app as any,
+      new CompatibilityEngine(),
+      new Map([["remotely-save", "red" as const], ["calendar", "green" as const]]),
+      new Set(["remotely-save"])
+    );
+    await gen.generate(() => undefined);
+
+    const copied = adapter.copy.mock.calls.map((c) => c[0]);
+    expect(copied).toContain(".obsidian/plugins/remotely-save/main.js");
+    expect(copied).not.toContain(".obsidian/plugins/calendar/main.js");
+    expect(adapter.write).toHaveBeenCalledWith(
+      ".obsidian.mobile/community-plugins.json",
+      '["remotely-save"]'
+    );
+  });
+});
+

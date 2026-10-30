@@ -22,6 +22,9 @@ export default class MobileOptimizerPlugin extends Plugin {
   /** Shared CompatibilityEngine instance — exposed so DashboardView can classify plugins. Assigned in onload(). */
   compatEngine!: CompatibilityEngine;
 
+  /** Keep-on-mobile choices that differ from the suggestion, by plugin id. */
+  overrides: Record<string, boolean> = {};
+
   /**
    * Called by Obsidian when the plugin is loaded.
    *
@@ -34,6 +37,7 @@ export default class MobileOptimizerPlugin extends Plugin {
     // Step 1 — instantiate core components.
     this.profiler = new Profiler(this.app);
     this.compatEngine = new CompatibilityEngine();
+    this.overrides = (await this.loadData())?.mobileOverrides ?? {};
 
     // Step 2 — register the DashboardView with Obsidian (Requirement 1.2).
     this.registerView(
@@ -54,6 +58,10 @@ export default class MobileOptimizerPlugin extends Plugin {
    */
   onunload(): void {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE);
+  }
+
+  async saveOverrides(): Promise<void> {
+    await this.saveData({ mobileOverrides: this.overrides });
   }
 
   /**

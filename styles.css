@@ -81,3 +81,22 @@
 .mobile-optimizer-generate-wrapper {
   margin-top: 12px;
 }
+
+.mobile-optimizer-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+  font-weight: var(--font-semibold);
+}
+
+.mobile-optimizer-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}

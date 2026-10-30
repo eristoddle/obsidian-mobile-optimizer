@@ -66,12 +66,19 @@ export class ConfigGenerator {
   /**
    * @param ratings Measured ratings from the dashboard. When absent (or an id
    *                is missing), falls back to the hardcoded classification.
+   * @param keep    Exact set of plugin ids to keep on mobile, as picked in the
+   *                dashboard. When given it overrides ratings entirely.
    */
   constructor(
     private app: App,
     private compatEngine: CompatibilityEngine,
-    private ratings?: Map<string, CompatibilityRating>
+    private ratings?: Map<string, CompatibilityRating>,
+    private keep?: Set<string>
   ) {}
+
+  private keeps(id: string): boolean {
+    return this.keep ? this.keep.has(id) : this.ratingOf(id) !== "red";
+  }
 
   private ratingOf(id: string): CompatibilityRating {
     return this.ratings?.get(id) ?? this.compatEngine.classify(id);
@@ -221,13 +228,13 @@ export class ConfigGenerator {
     if (parts[0] !== "plugins") return true;
     if (parts.length > 2) return false; // nothing below a plugin's own folder
     if (parts.length === 2) {
-      // Plugin folder: drop it entirely if the plugin is rated red. The folder
+      // Plugin folder: drop it entirely if the plugin isn't kept. The folder
       // name need not match the plugin id, so read the manifest.
       try {
         const manifest = JSON.parse(
           await this.app.vault.adapter.read(`${path}/manifest.json`)
         );
-        if (manifest?.id && this.ratingOf(manifest.id) === "red") return false;
+        if (manifest?.id && !this.keeps(manifest.id)) return false;
       } catch {
         // No readable manifest — copy it and let Obsidian decide.
       }
@@ -274,7 +281,7 @@ export class ConfigGenerator {
 
     // Step 4 — filter out Red-classified IDs, preserving relative order.
     const filtered = ids.filter(
-      (id) => this.ratingOf(id) !== "red"
+      (id) => this.keeps(id)
     );
 
     // Step 5 — write filtered array back.
