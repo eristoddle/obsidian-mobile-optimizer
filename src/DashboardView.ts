@@ -240,9 +240,13 @@ export class DashboardView extends ItemView {
 
     this.renderSummary();
     this.renderPluginList(sortByCost(this.metrics));
+    // Only what is actually being left off — a red plugin the user kept
+    // (or a sync plugin) is a decision already made, not a recommendation.
     renderRecommendationsTo(
       contentEl,
-      sortByCost(this.metrics).filter((m) => m.rating === "red" && m.enabled)
+      sortByCost(this.metrics).filter(
+        (m) => m.rating === "red" && m.enabled && !this.keeps(m)
+      )
     );
     this.renderGenerateButton();
   }

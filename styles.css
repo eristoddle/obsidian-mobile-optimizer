@@ -69,7 +69,7 @@
   white-space: nowrap;
 }
 
-.mobile-optimizer-table td:nth-child(n + 3) {
+.mobile-optimizer-table td:nth-child(n + 4) {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }

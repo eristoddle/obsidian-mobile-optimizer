@@ -473,5 +473,18 @@ describe("keep-on-mobile picker", () => {
     await flush();
     expect(boxes(view).map((b) => b.checked)).toEqual([false, true, true]);
   });
-});
 
+  it("doesn't recommend disabling a red plugin the user kept", async () => {
+    const host = makePluginHost([
+      makeMetric({ pluginId: "heavy", pluginName: "Heavy", rating: "red" }),
+      makeMetric({ pluginId: "remotely-save", pluginName: "Remotely Save", rating: "red" }),
+      makeMetric({ pluginId: "kept", pluginName: "Kept", rating: "red" }),
+    ]);
+    host.overrides = { kept: true };
+    const view = new DashboardView({} as any, host);
+    await view.onOpen();
+
+    const items = Array.from(view.contentEl.querySelectorAll("li")).map((li) => li.textContent);
+    expect(items).toEqual(["Disable Heavy on mobile"]);
+  });
+});
