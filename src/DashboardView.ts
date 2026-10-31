@@ -335,7 +335,7 @@ export class DashboardView extends ItemView {
       await generator.generate((state) => {
         if (state === "done") {
           new Notice(
-            `Mobile config generated with ${keep.size} plugins. On mobile: Settings \u2192 About \u2192 Override config folder \u2192 ${dest}`,
+            `Mobile config generated with ${keep.size} plugins. On mobile: Settings \u2192 Files and links \u2192 Override config folder \u2192 ${dest}`,
             10000
           );
           cleanup();
